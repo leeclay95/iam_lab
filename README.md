@@ -119,24 +119,10 @@ reads S3/SSM from the allowed account namespace when executing.
 
 ### Floci health check
 
-After starting Floci, services appear as `running` only after their first
-request — this is lazy initialization and is expected behaviour. The version
-check is sufficient to confirm Floci is ready:
-
 ```bash
-curl -s http://localhost:4566/_localstack/health | jq .version
-# Expected: "1.5.14"
+curl -s http://localhost:4566/_localstack/health | jq
 ```
 
-To trigger service initialization before running the lab:
-
-```bash
-aws s3api list-buckets
-aws ssm describe-parameters
-aws lambda list-functions
-```
-
----
 
 ## Setup
 
