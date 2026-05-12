@@ -1,0 +1,19 @@
+services:
+  floci:
+    image: floci/floci:latest
+    container_name: floci
+    ports:
+      - "4566:4566"
+    environment:
+      - FLOCI_STORAGE_MODE=hybrid
+      - FLOCI_DEFAULT_REGION=us-east-1
+      - FLOCI_DEFAULT_ACCOUNT_ID=000000000000
+      - FLOCI_SERVICES_LAMBDA_DOCKER_NETWORK=iam_lab_net
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - iam_lab_net
+
+networks:
+  iam_lab_net:
+    name: iam_lab_net

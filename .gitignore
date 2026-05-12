@@ -1,0 +1,20 @@
+# Terraform state and plan files
+*.tfstate
+*.tfstate.backup
+*.tfplan
+tfplan.binary
+tfplan.json
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+
+
+/tmp/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
+*.swp

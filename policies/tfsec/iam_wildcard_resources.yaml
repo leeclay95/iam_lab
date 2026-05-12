@@ -1,0 +1,108 @@
+# policies/tfsec/iam_wildcard_resources.yaml
+#
+# tfsec custom checks for IAM misconfigurations demonstrated in the Floci lab.
+#
+# Install tfsec:
+#   brew install tfsec          # macOS
+#   apt install tfsec           # Kali/Debian
+#   go install github.com/aquasecurity/tfsec/cmd/tfsec@latest
+#
+# Run against this lab:
+#   tfsec terraform/ --custom-check-dir policies/tfsec/
+#
+# Run with severity filter:
+#   tfsec terraform/ --custom-check-dir policies/tfsec/ --minimum-severity HIGH
+
+---
+checks:
+  # ── FINDING IAM-001: Wildcard resource on S3 actions ───────
+  - code: LAB-IAM-001
+    description: IAM role policy allows S3 actions on Resource wildcard
+    impact: Any Lambda or service using this role can read/write/delete all S3 buckets
+    resolution: Scope Resource to specific bucket ARN and prefix
+    related_links:
+      - https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html#grant-least-privilege
+    requiredTypes:
+      - resource
+    requiredLabels:
+      - aws_iam_role_policy
+    severity: HIGH
+    errorMessage: IAM role policy uses s3:* or broad S3 action on Resource:* — scope to specific bucket ARN
+    matchSpec:
+      name: policy
+      action: contains
+      value: '"Resource": "*"'
+    additionalCriteria:
+      - name: policy
+        action: contains
+        value: '"s3:'
+
+  # ── FINDING IAM-002: Wildcard resource on SSM actions ──────
+  - code: LAB-IAM-002
+    description: IAM role policy allows SSM GetParameter on Resource wildcard
+    impact: Role can read all SSM parameters including SecureStrings in all paths
+    resolution: Scope Resource to specific parameter path ARN
+    related_links:
+      - https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-paramstore-access.html
+    requiredTypes:
+      - resource
+    requiredLabels:
+      - aws_iam_role_policy
+    severity: HIGH
+    errorMessage: IAM role policy allows SSM parameter access on Resource:* — scope to specific path
+    matchSpec:
+      name: policy
+      action: contains
+      value: '"Resource": "*"'
+    additionalCriteria:
+      - name: policy
+        action: contains
+        value: '"ssm:GetParameter'
+
+  # ── FINDING IAM-003: iam:PassRole without condition ────────
+  - code: LAB-IAM-003
+    description: iam:PassRole granted without iam:PassedToService condition
+    impact: |
+      Allows passing any role to any AWS service — privilege escalation vector.
+      Attacker with this permission can create a Lambda with an admin role
+      and invoke it to gain elevated access.
+    resolution: |
+      Add condition: iam:PassedToService = lambda.amazonaws.com
+      Scope Resource to specific role ARN pattern
+    related_links:
+      - https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_passrole.html
+      - https://rhinosecuritylabs.com/aws/aws-privilege-escalation-methods-mitigation/
+    requiredTypes:
+      - resource
+    requiredLabels:
+      - aws_iam_role_policy
+    severity: CRITICAL
+    errorMessage: iam:PassRole without iam:PassedToService condition — privilege escalation risk
+    matchSpec:
+      name: policy
+      action: contains
+      value: '"iam:PassRole"'
+    additionalCriteria:
+      - name: policy
+        action: notContains
+        value: '"iam:PassedToService"'
+
+  # ── FINDING IAM-004: iam:PassRole on Resource wildcard ─────
+  - code: LAB-IAM-004
+    description: iam:PassRole allowed on Resource wildcard
+    impact: Can pass any existing role to a new Lambda or EC2 instance
+    resolution: Scope Resource to arn:aws:iam::ACCOUNT:role/specific-role-name
+    requiredTypes:
+      - resource
+    requiredLabels:
+      - aws_iam_role_policy
+    severity: CRITICAL
+    errorMessage: iam:PassRole on Resource:* — must be scoped to specific role ARN
+    matchSpec:
+      name: policy
+      action: contains
+      value: '"iam:PassRole"'
+    additionalCriteria:
+      - name: policy
+        action: contains
+        value: '"Resource": "*"'
