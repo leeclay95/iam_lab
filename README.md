@@ -235,14 +235,6 @@ unset AWS_PROFILE
 unset AWS_SESSION_TOKEN
 ```
 
-### 6. Build the Lambda package
-
-```bash
-cd lambda_src
-zip data_processor.zip index.js
-cd ..
-```
-
 ---
 
 ## Running the Lab
