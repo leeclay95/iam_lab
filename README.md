@@ -4,6 +4,63 @@ A self-contained AWS IAM misconfiguration lab running entirely in Docker via
 [Floci](https://github.com/floci-io/floci) — no real AWS account required.
 Demonstrates real attack chains, then proves remediation using GRC tooling.
 
+## Overview
+
+This lab models a common real-world scenario: an S3 bucket containing sensitive
+credentials and PII, protected by account namespace isolation, but undermined by
+two misconfigurations that completely bypass that protection:
+
+- A Lambda execution role with `s3:*` on `Resource: *` — any invoker gets full
+  read access to every bucket regardless of which account owns it
+- A `devops-role` with `iam:PassRole` on `Resource: *` and no
+  `iam:PassedToService` condition — anyone with this role can create a new
+  Lambda, attach the overpermissive exec role to it, and invoke freely
+
+An attacker who cannot touch the bucket directly can still exfiltrate every
+secret in it by pivoting through the Lambda. These are not theoretical findings —
+the lab proves the full chain executes end to end.
+
+## What Is Being Tested
+
+| Phase | Test | What It Proves |
+|-------|------|----------------|
+| Direct access | Attacker account hits S3 and SSM directly | Namespace isolation denies the attacker |
+| Lambda pivot | Attacker invokes `data-processor` Lambda | Overpermissive exec role returns vault contents and SSM SecureStrings to the attacker |
+| PassRole privesc | Attacker creates `evil-exfil` Lambda via `devops-role` | Unscoped `iam:PassRole` allows deploying attacker-controlled compute with elevated permissions |
+| GRC detection | `tfsec` and `conftest`/OPA scan Terraform plan | All misconfigurations are flagged before deployment |
+| Remediation | Same tests run against `terraform-fix/` | Attacks fail, GRC scan returns clean |
+
+## Why It Matters
+
+These misconfigurations are among the most common findings in AWS environments
+and are consistently missed in manual reviews:
+
+- Wildcard IAM resources (`Resource: *`) on S3 and SSM are frequently left in
+  place because the service "works" — the blast radius is invisible until
+  exploited
+- `iam:PassRole` without a `PassedToService` condition is a well-documented
+  privilege escalation path that bypasses every other control in the environment
+- Lambda execution roles are often copy-pasted from documentation with
+  overly broad permissions and never reviewed again
+
+The GRC layer — OPA Rego policies and tfsec custom checks — demonstrates that
+these issues are detectable at the IaC review stage, before any infrastructure
+is deployed. The before/after delta between `--vuln` and `--fixed` is the
+evidence artifact for a finding report.
+
+## How the Scripts Work
+
+All scripts accept `--vuln` or `--fixed` to target the correct environment.
+They use named AWS CLI profiles (`--profile allowed`, `--profile attacker`,
+`--profile root`) internally so the shell identity does not affect results.
+
+| Script | What It Does |
+|--------|-------------|
+| `quicktest.sh` | Validates Floci health, profile configuration, bucket accessibility, and Lambda existence before any test runs |
+| `01_access_denied_demo.sh` | Proves the baseline — attacker is denied on all sensitive paths, allowed account can read freely |
+| `02_lambda_pivot.sh` | Runs the full three-phase attack: direct denial confirmation → Lambda pivot exfiltrating vault contents and SSM SecureStrings → PassRole privesc deploying an attacker-controlled Lambda that reads PII |
+| `04_compare_roles.sh` | Runs identical S3 and SSM actions as both accounts simultaneously, outputs a color-coded ALLOW/DENY matrix and saves a CSV report to `/tmp/` |
+| `run_grc_checks.sh` | Runs OPA unit tests against the Rego policies, conftest against the Terraform plan JSON for IAM and S3 namespaces, and tfsec with custom checks — expects findings on `--vuln` and a clean scan on `--fixed` |
 ---
 
 ## What This Lab Covers
