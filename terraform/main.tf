@@ -7,6 +7,10 @@ terraform {
   }
 }
 
+# ============================================================
+# PROVIDER — default (test key / account 000000000000)
+# Used for: IAM, Lambda — 12-digit AKIDs break these in Floci
+# ============================================================
 provider "aws" {
   region                      = "us-east-1"
   access_key                  = "test"
@@ -25,6 +29,10 @@ provider "aws" {
   }
 }
 
+# ============================================================
+# PROVIDER — data (111111111111 / allowed profile account)
+# Used for: S3, SSM — so allowed profile owns these resources
+# ============================================================
 provider "aws" {
   alias                       = "data"
   region                      = "us-east-1"
@@ -40,6 +48,9 @@ provider "aws" {
   }
 }
 
+# ============================================================
+# LOCAL VALUES
+# ============================================================
 locals {
   allowed_account  = "111111111111"
   attacker_account = "222222222222"
@@ -47,6 +58,9 @@ locals {
   bucket           = "company-secrets-vault"
 }
 
+# ============================================================
+# S3 — owned by allowed account (111111111111)
+# ============================================================
 resource "aws_s3_bucket" "vault" {
   provider      = aws.data
   bucket        = local.bucket
@@ -103,6 +117,9 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "vault" {
   }
 }
 
+# ============================================================
+# S3 OBJECTS — sensitive data
+# ============================================================
 resource "aws_s3_object" "creds" {
   provider = aws.data
   bucket   = aws_s3_bucket.vault.id
@@ -131,6 +148,9 @@ resource "aws_s3_object" "public_notice" {
   content  = "This is a public file. No sensitive data here."
 }
 
+# ============================================================
+# BUCKET POLICY
+# ============================================================
 resource "aws_s3_bucket_policy" "vault" {
   provider   = aws.data
   bucket     = aws_s3_bucket.vault.id
@@ -163,6 +183,9 @@ resource "aws_s3_bucket_policy" "vault" {
   })
 }
 
+# ============================================================
+# SSM — owned by allowed account (111111111111)
+# ============================================================
 resource "aws_ssm_parameter" "db_password" {
   provider  = aws.data
   name      = "/prod/db/password"
@@ -179,6 +202,10 @@ resource "aws_ssm_parameter" "api_token" {
   overwrite = true
 }
 
+# ============================================================
+# IAM — Lambda execution role
+# VULN IAM-001/002: s3:* and ssm:* on Resource:*
+# ============================================================
 resource "aws_iam_role" "lambda_exec" {
   name = "lambda-overpermissive-role"
   assume_role_policy = jsonencode({
@@ -208,6 +235,10 @@ resource "aws_iam_role_policy" "lambda_exec_policy" {
   })
 }
 
+# ============================================================
+# IAM — DevOps role
+# VULN IAM-003/004: iam:PassRole on Resource:* without condition
+# ============================================================
 resource "aws_iam_role" "devops" {
   name = "devops-role"
   assume_role_policy = jsonencode({
@@ -238,6 +269,11 @@ resource "aws_iam_role_policy" "devops_policy" {
   })
 }
 
+# ============================================================
+# LAMBDA — data-processor
+# Uses overpermissive exec role
+# Internal endpoint uses container name on iam_lab_net
+# ============================================================
 resource "aws_lambda_function" "data_processor" {
   filename      = "${path.module}/../lambda_src/data_processor.zip"
   function_name = "data-processor"
@@ -256,6 +292,85 @@ resource "aws_lambda_function" "data_processor" {
   depends_on = [aws_iam_role_policy.lambda_exec_policy]
 }
 
+# ============================================================
+# LAMBDA PERMISSION
+# VULN LAMBDA-001: any account can invoke — no restriction
+# Simulates missing invoke policy by explicitly allowing all
+# three lab accounts (root, allowed, attacker)
+# ============================================================
+resource "aws_lambda_permission" "invoke_root" {
+  statement_id  = "AllowRootAccount"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.data_processor.function_name
+  principal     = "arn:aws:iam::000000000000:root"
+  depends_on    = [aws_lambda_function.data_processor]
+}
+
+resource "aws_lambda_permission" "invoke_allowed" {
+  statement_id  = "AllowAllowedAccount"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.data_processor.function_name
+  principal     = "arn:aws:iam::111111111111:root"
+  depends_on    = [aws_lambda_function.data_processor]
+}
+
+resource "aws_lambda_permission" "invoke_attacker" {
+  statement_id  = "AllowAttackerAccount"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.data_processor.function_name
+  principal     = "arn:aws:iam::222222222222:root"
+  depends_on    = [aws_lambda_function.data_processor]
+}
+
+# ============================================================
+# IAM USER — low privilege attacker
+# Simulates a compromised developer credential or leaked key
+# Has lambda:List* and lambda:Get* only — no S3, no SSM
+# The missing lambda:InvokeFunction restriction is LAMBDA-001
+# ============================================================
+resource "aws_iam_user" "attacker" {
+  name = "dev-contractor"
+}
+
+resource "aws_iam_user_policy" "attacker_policy" {
+  name = "dev-contractor-policy"
+  user = aws_iam_user.attacker.name
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "LambdaReadAndInvoke"
+        Effect = "Allow"
+        Action = [
+          "lambda:ListFunctions",
+          "lambda:GetFunction",
+          "lambda:GetFunctionConfiguration",
+          "lambda:GetPolicy",
+          "lambda:InvokeFunction"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_access_key" "attacker" {
+  user = aws_iam_user.attacker.name
+}
+
+output "attacker_access_key_id" {
+  value = aws_iam_access_key.attacker.id
+}
+
+output "attacker_secret_access_key" {
+  value     = aws_iam_access_key.attacker.secret
+  sensitive = true
+}
+
+
+# ============================================================
+# OUTPUTS
+# ============================================================
 output "bucket_name"             { value = aws_s3_bucket.vault.bucket }
 output "lambda_arn"              { value = aws_lambda_function.data_processor.arn }
 output "overpermissive_role_arn" { value = aws_iam_role.lambda_exec.arn }
