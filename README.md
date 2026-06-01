@@ -174,11 +174,7 @@ IAM API calls returning HTTP 500. The Terraform uses a dual-provider setup:
 The Lambda env vars include `AWS_ACCESS_KEY_ID=111111111111` so the runtime
 reads S3/SSM from the allowed account namespace when executing.
 
-### Floci health check
 
-```bash
-curl -s http://localhost:4566/_localstack/health | jq
-```
 
 
 ## Setup
@@ -213,11 +209,13 @@ Start fresh:
 
 ```bash
 docker compose up -d
-sleep 5
-curl -s http://localhost:4566/_localstack/health | jq .version
+```
+### Floci health check
+
+```bash
+curl -s http://localhost:4566/_localstack/health | jq
 ```
 
-Expected output: `"1.5.14"`
 
 ### 4. Configure AWS CLI profiles
 
