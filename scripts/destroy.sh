@@ -39,6 +39,21 @@ for group in data:
 print(f'Deleted {count} versions/markers')
 " || true
 
+echo "[*] Removing attacker-created Lambda functions not managed by Terraform..."
+MANAGED=$([ "$MODE" = "--fixed" ] && echo "data-processor-fixed" || echo "data-processor")
+aws lambda list-functions --output json 2>/dev/null | python3 -c "
+import json,sys,subprocess,os
+managed=os.environ.get('MANAGED','data-processor')
+fns=json.load(sys.stdin).get('Functions',[])
+for f in fns:
+    name=f['FunctionName']
+    if name not in managed.split(','):
+        subprocess.run(['aws','lambda','delete-function',
+            '--function-name',name,
+            '--endpoint-url','http://localhost:4566'], capture_output=True)
+        print(f'  deleted: {name}')
+" MANAGED="$MANAGED" || true
+
 echo "[*] Running terraform destroy..."
 cd "$TF_DIR"
 terraform destroy -auto-approve -refresh=false
